@@ -5,11 +5,22 @@ import util from 'tweetnacl-util';
 const toHex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 const fromHex = (hex) => new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
 
+// NEW: Dictionary for random names
+const generateRandomName = () => {
+  const adjs = ['Neon', 'Cyber', 'Stealth', 'Quantum', 'Cosmic', 'Void', 'Crypto', 'Rogue'];
+  const nouns = ['Ninja', 'Tiger', 'Ghost', 'Rider', 'Dragon', 'Phantom', 'Wolf', 'Hacker'];
+  const adj = adjs[Math.floor(Math.random() * adjs.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  const num = Math.floor(Math.random() * 100);
+  return `${adj}${noun}${num}`;
+};
+
 function App() {
+  const [username, setUsername] = useState(''); // NEW: Tracks the user's name
   const [roomCode, setRoomCode] = useState('');
   const [msgInput, setMsgInput] = useState('');
   const [logs, setLogs] = useState(['System: Ready to connect...']);
-  const [isConnected, setIsConnected] = useState(false); // NEW: Tracks connection state
+  const [isConnected, setIsConnected] = useState(false);
 
   const ws = useRef(null);
   const myKeys = useRef(null);
@@ -21,8 +32,17 @@ function App() {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  // NEW: Cleanup ghost connections if React hot-reloads or component unmounts
+  // NEW: On Initial Load - Set random name and check URL for room code
   useEffect(() => {
+    setUsername(generateRandomName()); // Assign a random name immediately
+
+    const params = new URLSearchParams(window.location.search);
+    const urlRoom = params.get('room');
+    if (urlRoom) {
+      setRoomCode(urlRoom.toUpperCase()); // Auto-fill if ?room= exists in URL
+    }
+
+    // Cleanup ghost connections
     return () => {
       if (ws.current) {
         ws.current.close();
@@ -39,12 +59,17 @@ function App() {
       newCode += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     setRoomCode(newCode);
+    
+    // NEW: Automatically update the browser URL so the user can easily copy/share it
+    window.history.pushState({}, '', `?room=${newCode}`);
   };
 
   const joinRoom = () => {
     if (!roomCode.trim()) return;
+    
+    // Ensure the URL matches the room we just joined (if they typed it manually)
+    window.history.pushState({}, '', `?room=${roomCode}`);
 
-    // NEW: Kill any existing connections before making a new one
     if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
       ws.current.close();
     }
@@ -57,7 +82,7 @@ function App() {
     ws.current = new WebSocket(uri);
 
     ws.current.onopen = () => {
-      setIsConnected(true); // Lock the connect button
+      setIsConnected(true);
       addLog(`System: Connected to room ${roomCode}. Waiting for peer...`);
       ws.current.send(JSON.stringify({
         type: 'key_exchange',
@@ -90,7 +115,8 @@ function App() {
             const decryptedBytes = nacl.box.open(ciphertext, nonce, peerKey.current, myKeys.current.secretKey);
 
             if (decryptedBytes) {
-              addLog(`Peer: ${util.encodeUTF8(decryptedBytes)}`);
+              // NEW: We just print exactly what the peer sends, since their username is baked into the message
+              addLog(`[Incoming] ${util.encodeUTF8(decryptedBytes)}`);
             } else {
               addLog('System: Failed to decrypt message.');
             }
@@ -104,8 +130,8 @@ function App() {
     ws.current.onerror = () => addLog('System: Connection Error.');
     ws.current.onclose = () => {
       addLog('System: Disconnected.');
-      setIsConnected(false); // Unlock the connect button
-      peerKey.current = null; // Reset peer so we can reconnect
+      setIsConnected(false);
+      peerKey.current = null;
     };
   };
 
@@ -113,8 +139,12 @@ function App() {
     e.preventDefault();
     if (!msgInput.trim() || !peerKey.current || !ws.current) return;
 
+    // NEW: Bake the username directly into the message text before encrypting
+    const finalName = username.trim() || 'Anonymous';
+    const formattedMessage = `${finalName}: ${msgInput}`;
+
     const nonce = nacl.randomBytes(nacl.box.nonceLength);
-    const msgBytes = util.decodeUTF8(msgInput);
+    const msgBytes = util.decodeUTF8(formattedMessage);
     const ciphertext = nacl.box(msgBytes, nonce, peerKey.current, myKeys.current.secretKey);
 
     const payload = new Uint8Array(nonce.length + ciphertext.length);
@@ -127,7 +157,8 @@ function App() {
       payload: toHex(payload)
     }));
 
-    addLog(`You: ${msgInput}`);
+    // Update local log to show you sent it
+    addLog(`[You] ${finalName}: ${msgInput}`);
     setMsgInput('');
   };
 
@@ -135,12 +166,23 @@ function App() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', color: '#00ff00', fontFamily: "'Courier New', Courier, monospace" }}>
 
       {/* 1. Header Bar */}
-      <div style={{ padding: '15px 25px', background: '#111', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ padding: '15px 25px', background: '#111', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
         <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>[ Secure Web Messenger ]</h2>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          
+        
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {/* NEW: Username Input Field */}
+          <span style={{ color: '#888', fontSize: '0.9rem' }}>ID:</span>
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            disabled={isConnected}
+            style={{ padding: '8px 10px', background: '#000', color: '#00ffff', border: '1px solid #333', outline: 'none', width: '130px', textAlign: 'center' }}
+          />
+
           <button onClick={generateCode} disabled={isConnected} style={{ padding: '8px 15px', background: '#333', color: '#fff', cursor: isConnected ? 'not-allowed' : 'pointer', border: '1px solid #555', fontSize: '0.9rem' }}>
-            GENERATE
+            NEW ROOM
           </button>
 
           <input
@@ -149,10 +191,9 @@ function App() {
             value={roomCode}
             onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
             disabled={isConnected}
-            style={{ padding: '8px 15px', background: '#000', color: '#00ff00', border: '1px solid #333', outline: 'none', width: '120px', textAlign: 'center' }}
+            style={{ padding: '8px 15px', background: '#000', color: '#00ff00', border: '1px solid #333', outline: 'none', width: '100px', textAlign: 'center' }}
           />
           
-          {/* NEW: Button turns grey and disables when connected */}
           <button onClick={joinRoom} disabled={isConnected} style={{ padding: '8px 20px', background: isConnected ? '#555' : '#00ff00', color: '#000', cursor: isConnected ? 'not-allowed' : 'pointer', fontWeight: 'bold', border: 'none' }}>
             {isConnected ? 'CONNECTED' : 'CONNECT'}
           </button>
@@ -163,7 +204,7 @@ function App() {
       <div style={{ flexGrow: 1, padding: '25px', overflowY: 'auto', background: '#0a0a0a', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {logs.map((log, index) => (
           <div key={index} style={{
-            color: log.startsWith('You:') ? '#fff' : log.startsWith('Peer:') ? '#ff00ff' : '#00aa00',
+            color: log.startsWith('[You]') ? '#fff' : log.startsWith('[Incoming]') ? '#ff00ff' : '#00aa00',
             lineHeight: '1.5'
           }}>
             {log}
