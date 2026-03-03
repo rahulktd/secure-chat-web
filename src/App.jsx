@@ -23,6 +23,16 @@ function App() {
 
   const addLog = (msg) => setLogs((prev) => [...prev, msg]);
 
+  // --- NEW: Generate a random 6-character room code ---
+  const generateCode = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let newCode = '';
+    for (let i = 0; i < 6; i++) {
+      newCode += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setRoomCode(newCode); // Fills the input box automatically
+  };
+
   const joinRoom = () => {
     if (!roomCode.trim()) return;
 
@@ -120,6 +130,12 @@ function App() {
       <div style={{ padding: '15px 25px', background: '#111', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>[ Secure Web Messenger ]</h2>
         <div style={{ display: 'flex', gap: '10px' }}>
+          
+          {/* --- NEW: The Generate Button --- */}
+          <button onClick={generateCode} style={{ padding: '8px 15px', background: '#333', color: '#fff', cursor: 'pointer', border: '1px solid #555', fontSize: '0.9rem' }}>
+            GENERATE
+          </button>
+
           <input
             type="text"
             placeholder="Room Code"
