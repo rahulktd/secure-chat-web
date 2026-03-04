@@ -5,21 +5,22 @@ import util from 'tweetnacl-util';
 const toHex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 const fromHex = (hex) => new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
 
-// NEW: Dictionary for random names
-const generateRandomName = () => {
-  const adjs = ['Neon', 'Cyber', 'Stealth', 'Quantum', 'Cosmic', 'Void', 'Crypto', 'Rogue'];
-  const nouns = ['Ninja', 'Tiger', 'Ghost', 'Rider', 'Dragon', 'Phantom', 'Wolf', 'Hacker'];
-  const adj = adjs[Math.floor(Math.random() * adjs.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const num = Math.floor(Math.random() * 100);
-  return `${adj}${noun}${num}`;
-};
+// Replace this with your exact Hugging Face URL base
+const API_BASE_URL = 'https://rahulktd-secure-terminal-chat.hf.space';
+const WS_BASE_URL = 'wss://rahulktd-secure-terminal-chat.hf.space';
 
 function App() {
-  const [username, setUsername] = useState(''); // NEW: Tracks the user's name
+  // --- Auth State ---
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [token, setToken] = useState(null);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  // --- Chat State ---
   const [roomCode, setRoomCode] = useState('');
   const [msgInput, setMsgInput] = useState('');
-  const [logs, setLogs] = useState(['System: Ready to connect...']);
+  const [logs, setLogs] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
 
   const ws = useRef(null);
@@ -27,30 +28,49 @@ function App() {
   const peerKey = useRef(null);
   const logEndRef = useRef(null);
 
-  // Auto-scroll to bottom of chat
+  // Auto-scroll chat
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  // NEW: On Initial Load - Set random name and check URL for room code
+  // Check URL for room code on load
   useEffect(() => {
-    setUsername(generateRandomName()); // Assign a random name immediately
-
     const params = new URLSearchParams(window.location.search);
     const urlRoom = params.get('room');
     if (urlRoom) {
-      setRoomCode(urlRoom.toUpperCase()); // Auto-fill if ?room= exists in URL
+      setRoomCode(urlRoom.toUpperCase());
     }
-
-    // Cleanup ghost connections
     return () => {
-      if (ws.current) {
-        ws.current.close();
-      }
+      if (ws.current) ws.current.close();
     };
   }, []);
 
   const addLog = (msg) => setLogs((prev) => [...prev, msg]);
+
+  // --- NEW: The HTTP Login Handshake ---
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/token/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setToken(data.access); // Save the JWT in memory
+        setIsLoggedIn(true);   // Unlock the chat UI
+        setLogs(['System: Authentication successful. Ready to connect...']);
+      } else {
+        setLoginError('Invalid credentials. Access denied.');
+      }
+    } catch (err) {
+      setLoginError('Failed to reach authentication server.');
+    }
+  };
 
   const generateCode = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -59,15 +79,12 @@ function App() {
       newCode += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     setRoomCode(newCode);
-    
-    // NEW: Automatically update the browser URL so the user can easily copy/share it
     window.history.pushState({}, '', `?room=${newCode}`);
   };
 
   const joinRoom = () => {
-    if (!roomCode.trim()) return;
+    if (!roomCode.trim() || !token) return;
     
-    // Ensure the URL matches the room we just joined (if they typed it manually)
     window.history.pushState({}, '', `?room=${roomCode}`);
 
     if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
@@ -77,17 +94,14 @@ function App() {
     myKeys.current = nacl.box.keyPair();
     const myPublicKeyHex = toHex(myKeys.current.publicKey);
 
-    // Make sure your exact Hugging Face URL is here!
-    const uri = `wss://rahulktd-secure-terminal-chat.hf.space/ws/chat/${roomCode}/`;
+    // --- NEW: Inject the JWT token into the WebSocket URL ---
+    const uri = `${WS_BASE_URL}/ws/chat/${roomCode}/?token=${token}`;
     ws.current = new WebSocket(uri);
 
     ws.current.onopen = () => {
       setIsConnected(true);
       addLog(`System: Connected to room ${roomCode}. Waiting for peer...`);
-      ws.current.send(JSON.stringify({
-        type: 'key_exchange',
-        public_key: myPublicKeyHex
-      }));
+      ws.current.send(JSON.stringify({ type: 'key_exchange', public_key: myPublicKeyHex }));
     };
 
     ws.current.onmessage = (event) => {
@@ -98,11 +112,7 @@ function App() {
           if (!peerKey.current) {
             peerKey.current = fromHex(data.public_key);
             addLog('System: Peer connected! E2EE established. You can now chat.');
-
-            ws.current.send(JSON.stringify({
-              type: 'key_exchange',
-              public_key: myPublicKeyHex
-            }));
+            ws.current.send(JSON.stringify({ type: 'key_exchange', public_key: myPublicKeyHex }));
           }
         }
       }
@@ -115,7 +125,6 @@ function App() {
             const decryptedBytes = nacl.box.open(ciphertext, nonce, peerKey.current, myKeys.current.secretKey);
 
             if (decryptedBytes) {
-              // NEW: We just print exactly what the peer sends, since their username is baked into the message
               addLog(`[Incoming] ${util.encodeUTF8(decryptedBytes)}`);
             } else {
               addLog('System: Failed to decrypt message.');
@@ -127,7 +136,7 @@ function App() {
       }
     };
 
-    ws.current.onerror = () => addLog('System: Connection Error.');
+    ws.current.onerror = () => addLog('System: Connection Error or Unauthorized.');
     ws.current.onclose = () => {
       addLog('System: Disconnected.');
       setIsConnected(false);
@@ -139,9 +148,8 @@ function App() {
     e.preventDefault();
     if (!msgInput.trim() || !peerKey.current || !ws.current) return;
 
-    // NEW: Bake the username directly into the message text before encrypting
-    const finalName = username.trim() || 'Anonymous';
-    const formattedMessage = `${finalName}: ${msgInput}`;
+    // Use the actual authenticated username
+    const formattedMessage = `${username}: ${msgInput}`;
 
     const nonce = nacl.randomBytes(nacl.box.nonceLength);
     const msgBytes = util.decodeUTF8(formattedMessage);
@@ -157,29 +165,47 @@ function App() {
       payload: toHex(payload)
     }));
 
-    // Update local log to show you sent it
-    addLog(`[You] ${finalName}: ${msgInput}`);
+    addLog(`[You] ${username}: ${msgInput}`);
     setMsgInput('');
   };
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', color: '#00ff00', fontFamily: "'Courier New', Courier, monospace" }}>
-
-      {/* 1. Header Bar */}
-      <div style={{ padding: '15px 25px', background: '#111', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-        <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>[ Secure Web Messenger ]</h2>
-        
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          {/* NEW: Username Input Field */}
-          <span style={{ color: '#888', fontSize: '0.9rem' }}>ID:</span>
+  // --- UI: The Login Screen ---
+  if (!isLoggedIn) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw', backgroundColor: '#0a0a0a', color: '#00ff00', fontFamily: "'Courier New', Courier, monospace" }}>
+        <form onSubmit={handleLogin} style={{ background: '#111', padding: '40px', border: '1px solid #333', display: 'flex', flexDirection: 'column', gap: '20px', width: '350px' }}>
+          <h2 style={{ margin: 0, textAlign: 'center', color: '#fff' }}>[ SECURE LOGIN ]</h2>
+          {loginError && <div style={{ color: '#ff0033', textAlign: 'center', fontSize: '0.9rem' }}>{loginError}</div>}
           <input
             type="text"
             placeholder="Username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            disabled={isConnected}
-            style={{ padding: '8px 10px', background: '#000', color: '#00ffff', border: '1px solid #333', outline: 'none', width: '130px', textAlign: 'center' }}
+            style={{ padding: '12px', background: '#000', color: '#00ff00', border: '1px solid #333', outline: 'none' }}
           />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{ padding: '12px', background: '#000', color: '#00ff00', border: '1px solid #333', outline: 'none' }}
+          />
+          <button type="submit" style={{ padding: '12px', background: '#00ff00', color: '#000', cursor: 'pointer', fontWeight: 'bold', border: 'none', marginTop: '10px' }}>
+            AUTHENTICATE
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  // --- UI: The Chat Screen (Only renders if logged in) ---
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', color: '#00ff00', fontFamily: "'Courier New', Courier, monospace", overflow: 'hidden' }}>
+      <div style={{ padding: '15px 25px', background: '#111', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#fff' }}>[ Secure Web Messenger ]</h2>
+        
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <span style={{ color: '#888', fontSize: '0.9rem' }}>Logged in as: <strong style={{color: '#00ffff'}}>{username}</strong></span>
 
           <button onClick={generateCode} disabled={isConnected} style={{ padding: '8px 15px', background: '#333', color: '#fff', cursor: isConnected ? 'not-allowed' : 'pointer', border: '1px solid #555', fontSize: '0.9rem' }}>
             NEW ROOM
@@ -200,7 +226,6 @@ function App() {
         </div>
       </div>
 
-      {/* 2. Fullscreen Chat Log */}
       <div style={{ flexGrow: 1, padding: '25px', overflowY: 'auto', background: '#0a0a0a', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {logs.map((log, index) => (
           <div key={index} style={{
@@ -213,7 +238,6 @@ function App() {
         <div ref={logEndRef} />
       </div>
 
-      {/* 3. Input Footer */}
       <div style={{ padding: '20px 25px', background: '#111', borderTop: '1px solid #333' }}>
         <form onSubmit={sendMessage} style={{ display: 'flex', gap: '15px' }}>
           <input
